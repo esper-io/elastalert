@@ -928,7 +928,10 @@ class ElastAlerter(object):
 
             if rule['realert']:
                 next_alert, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
-                self.set_realert(silence_cache_key, next_alert, exponent)
+                if rule.get("max_realert_times"):
+                    max_realert_times = rule.get("max_realert_times")
+                    alerted_times = 0
+                self.set_realert(silence_cache_key, next_alert, exponent, max_realert_times, alerted_times)
 
             if rule.get('run_enhancements_first'):
                 try:
@@ -1867,20 +1870,22 @@ class ElastAlerter(object):
 
         elastalert_logger.info('Success. %s will be silenced until %s' % (silence_cache_key, silence_ts))
 
-    def set_realert(self, silence_cache_key, timestamp, exponent):
+    def set_realert(self, silence_cache_key, timestamp, exponent, max_realert_times=1, alerted_times=0):
         """ Write a silence to Elasticsearch for silence_cache_key until timestamp. """
         body = {'exponent': exponent,
                 'rule_name': silence_cache_key,
                 '@timestamp': ts_now(),
-                'until': timestamp}
+                'until': timestamp,
+                'max_realert_times': max_realert_times,
+                'alerted_times': alerted_times}
 
-        self.silence_cache[silence_cache_key] = (timestamp, exponent)
+        self.silence_cache[silence_cache_key] = (timestamp, exponent, alerted_times, max_realert_times)
         return self.writeback('silence', body)
 
     def is_silenced(self, rule_name):
         """ Checks if rule_name is currently silenced. Returns false on exception. """
         if rule_name in self.silence_cache:
-            if ts_now() < self.silence_cache[rule_name][0]:
+            if ts_now() < self.silence_cache[rule_name][0] or self.silence_cache[rule_name][2] >= self.silence_cache[rule_name][3]:
                 return True
 
         if self.debug:
@@ -2053,3 +2058,15 @@ def main(args=None):
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv[1:]))
+
+
+# problem trying to solve:
+# 1. alert_times --> alert only 1 time.
+# 2. reset alert_time to 0. when there is a match for reverse query
+# reset_filter
+# we will run reset filter task in a seperate job
+
+# our new logic:
+# insert a document in elastalert_silence with max_alart_times alerted_times
+# in is_silenced() function, if alerted_times >= max_alert_times silcence the alert.
+# when a reverse query matches, insert a new document for that rule with reseted  max_alart_times and alerted_times.

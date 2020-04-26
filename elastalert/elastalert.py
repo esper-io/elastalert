@@ -161,7 +161,6 @@ class ElastAlerter(object):
         self.replace_dots_in_field_names = self.conf.get('replace_dots_in_field_names', False)
         self.thread_data.num_hits = 0
         self.thread_data.num_dupes = 0
-        self.thread_data.reset_alerted_times = False
         self.scheduler = BackgroundScheduler()
         self.string_multi_field_name = self.conf.get('string_multi_field_name', False)
         self.add_metadata_alert = self.conf.get('add_metadata_alert', False)
@@ -472,10 +471,31 @@ class ElastAlerter(object):
                 # Remember the new data's IDs
                 rule['reverse_query_processed_hits'][event['_id']] = lookup_es_key(event, rule['timestamp_field'])
                 elastalert_logger.info("Processed event id: %s",rule['reverse_query_processed_hits'][event['_id']])
-                self.thread_data.reset_alerted_times = True
+                rule['reset_alerted_times'] = True
 
-        # if self.thread_data.reset_alerted_times:  
-        #     elastalert_logger.info("Found reverse query for rule: %s. Reseting query key", rule['name'])
+        if rule['reset_alerted_times']:
+            rule_name = rule['name']
+            silence_cache_key = rule['name']
+            query_key_value = self.get_query_key_value(rule, reverse_query_hits[0])
+            if query_key_value is not None:
+                elastalert_logger.info("Found reverse query for rule: %s. Reseting silence_cache_key", rule['name'])
+                silence_cache_key += '.' + query_key_value
+
+                max_realert_times = rule.get("max_realert_times", 1)
+
+                # this will set the key the cache key
+                self.is_silenced(silence_cache_key, max_realert_times)
+
+                until = self.silence_cache[silence_cache_key][0]
+                exponent = self.silence_cache[silence_cache_key][1]
+                alerted_times = 0
+                max_alert_times = self.silence_cache[silence_cache_key][3]
+                self.silence_cache[silence_cache_key] = (until, exponent, alerted_times, max_alert_times)
+                self.set_realert(silence_cache_key, until, exponent, alerted_times, max_alert_times)
+                rule['reset_alerted_times'] = False
+                elastalert_logger.info("silence cache after inserting doc in ES: %s", self.silence_cache[silence_cache_key])
+            else:
+                elastalert_logger.info("Found reverse query for rule: %s. But query_key_value is None", rule['name'])
 
         # Record doc_type for use in get_top_counts
         if 'doc_type' not in rule and len(hits):
@@ -992,6 +1012,7 @@ class ElastAlerter(object):
                 next_alert, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
                 try:
                     alerted_times = self.silence_cache.get(silence_cache_key, ())[2]
+                    elastalert_logger.info("AlertedTimes from cache: %s", alerted_times)
                 except IndexError:
                     alerted_times = 0
 
@@ -1094,6 +1115,8 @@ class ElastAlerter(object):
             if prop not in rule:
                 continue
             new_rule[prop] = rule[prop]
+
+        new_rule["reset_alerted_times"] = False
 
         job = self.scheduler.add_job(self.handle_rule_execution, 'interval',
                                      args=[new_rule],
@@ -1311,6 +1334,10 @@ class ElastAlerter(object):
             elastalert_logger.info("Background configuration change check run at %s" % (pretty_ts(ts_now())))
 
     def handle_rule_execution(self, rule):
+
+        # elastalert_logger.info("reset_alerted_times %s", self.thread_data.num_dupes)
+        # elastalert_logger.info("reset_alerted_times %s", self.thread_data.reset_alerted_times)
+
         self.thread_data.alerts_sent = 0
         next_run = datetime.datetime.utcnow() + rule['run_every']
         # Set endtime based on the rule's delay
@@ -1958,15 +1985,6 @@ class ElastAlerter(object):
         """ Checks if rule_name is currently silenced. Returns false on exception. """
         # if self.thread_data.reset_alerted_times:
         if rule_name in self.silence_cache:
-            if self.thread_data.reset_alerted_times:
-                until = self.silence_cache[rule_name][0]
-                exponent = self.silence_cache[rule_name][1]
-                alerted_times = 0
-                max_alert_times = self.silence_cache[rule_name][2]
-                self.silence_cache = (until, exponent, alerted_times, max_alert_times)
-                self.set_realert(silence_cache_key, until, exponent, alerted_times, max_alert_times)
-                self.thread_data.reset_alerted_times = False
-                elastalert_logger.info("Resetting silence cache key: current max_alerted_value: %s", self.silence_cache[rule_name][2])
             if ts_now() < self.silence_cache[rule_name][0] or self.silence_cache[rule_name][2] >= self.silence_cache[rule_name][3]:
                 return True
 
@@ -2007,7 +2025,7 @@ class ElastAlerter(object):
                 self.silence_cache[rule_name] = (ts_to_dt(until_ts), exponent, alerted_times, max_realert_times)
             else:
                 self.silence_cache[rule_name] = (ts_to_dt(until_ts), self.silence_cache[rule_name][1], alerted_times, max_realert_times)
-            if ts_now() < ts_to_dt(until_ts):
+            if ts_now() < ts_to_dt(until_ts) or alerted_times >= max_realert_times:
                 return True
         return False
 

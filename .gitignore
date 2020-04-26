@@ -1,4 +1,5 @@
 config.yaml
+rules/
 .tox/
 .coverage
 .idea/*

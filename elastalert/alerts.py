@@ -913,8 +913,7 @@ class CommandAlerter(Alerter):
             subp = subprocess.Popen(command, stdin=subprocess.PIPE, shell=self.shell)
 
             if self.rule.get('pipe_match_json'):
-                match_data = {"rulename": self.rule.name, "matches": matches}
-                match_json = json.dumps(match_data, cls=DateTimeEncoder) + '\n'
+                match_json = json.dumps(matches, cls=DateTimeEncoder) + '\n'
                 stdout, stderr = subp.communicate(input=match_json.encode())
             elif self.rule.get('pipe_alert_text'):
                 alert_text = self.create_alert_body(matches)

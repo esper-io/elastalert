@@ -928,10 +928,18 @@ class ElastAlerter(object):
 
             if rule['realert']:
                 next_alert, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
-                if rule.get("max_realert_times"):
-                    max_realert_times = rule.get("max_realert_times")
+                try:
+                    alerted_times = self.silence_cache.get(silence_cache_key, ())[2]
+                except IndexError:
                     alerted_times = 0
-                self.set_realert(silence_cache_key, next_alert, exponent, max_realert_times, alerted_times)
+                if rule.get("max_realert_times"):
+                    # New every time theres alert, we insert an new document with updated alerted_times
+                    # but with the same "until" time.
+                    max_realert_times = rule.get("max_realert_times")
+                    self.set_realert(silence_cache_key, next_alert, exponent, alerted_times+1, max_realert_times)
+                else:
+                    # if max_realert_times is not specified we will alert for only once.
+                    self.set_realert(silence_cache_key, next_alert, exponent, alerted_times+1)
 
             if rule.get('run_enhancements_first'):
                 try:
@@ -1870,7 +1878,7 @@ class ElastAlerter(object):
 
         elastalert_logger.info('Success. %s will be silenced until %s' % (silence_cache_key, silence_ts))
 
-    def set_realert(self, silence_cache_key, timestamp, exponent, max_realert_times=1, alerted_times=0):
+    def set_realert(self, silence_cache_key, timestamp, exponent, alerted_times=0, max_realert_times=1):
         """ Write a silence to Elasticsearch for silence_cache_key until timestamp. """
         body = {'exponent': exponent,
                 'rule_name': silence_cache_key,
@@ -1904,7 +1912,7 @@ class ElastAlerter(object):
             if self.writeback_es.is_atleastsixtwo():
                 if self.writeback_es.is_atleastsixsix():
                     res = self.writeback_es.search(index=index, size=1, body=query,
-                                                   _source_includes=['until', 'exponent'])
+                                                   _source_includes=['until', 'exponent', 'max_realert_times', 'alerted_times'])
                 else:
                     res = self.writeback_es.search(index=index, size=1, body=query,
                                                    _source_include=['until', 'exponent'])
@@ -1918,10 +1926,13 @@ class ElastAlerter(object):
         if res['hits']['hits']:
             until_ts = res['hits']['hits'][0]['_source']['until']
             exponent = res['hits']['hits'][0]['_source'].get('exponent', 0)
+            max_realert_times = res['hits']['hits'][0]['_source']['max_realert_times']
+            alerted_times = res['hits']['hits'][0]['_source']['alerted_times']
+
             if rule_name not in list(self.silence_cache.keys()):
-                self.silence_cache[rule_name] = (ts_to_dt(until_ts), exponent)
+                self.silence_cache[rule_name] = (ts_to_dt(until_ts), exponent, alerted_times, max_realert_times)
             else:
-                self.silence_cache[rule_name] = (ts_to_dt(until_ts), self.silence_cache[rule_name][1])
+                self.silence_cache[rule_name] = (ts_to_dt(until_ts), self.silence_cache[rule_name][1], alerted_times, max_realert_times)
             if ts_now() < ts_to_dt(until_ts):
                 return True
         return False
@@ -2018,7 +2029,7 @@ class ElastAlerter(object):
     def next_alert_time(self, rule, name, timestamp):
         """ Calculate an 'until' time and exponent based on how much past the last 'until' we are. """
         if name in self.silence_cache:
-            last_until, exponent = self.silence_cache[name]
+            last_until, exponent, alerted_times, max_alert_times = self.silence_cache[name]
         else:
             # If this isn't cached, this is the first alert or writeback_es is down, normal realert
             return timestamp + rule['realert'], 0
@@ -2067,6 +2078,6 @@ if __name__ == '__main__':
 # we will run reset filter task in a seperate job
 
 # our new logic:
-# insert a document in elastalert_silence with max_alart_times alerted_times
+# insert a document in elastalert_silence with max_alert_times alerted_times
 # in is_silenced() function, if alerted_times >= max_alert_times silcence the alert.
-# when a reverse query matches, insert a new document for that rule with reseted  max_alart_times and alerted_times.
+# when a reverse query matches, insert a new document for that rule with reseted  max_alert_times and alerted_times.

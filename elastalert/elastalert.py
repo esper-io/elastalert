@@ -460,7 +460,10 @@ class ElastAlerter(object):
         hits = self.process_hits(rule, hits)
         reverse_query_hits =  self.process_hits(rule, res2['hits']['hits'])
 
-        if self.thread_data.reverse_query_total_hits:
+        if self.thread_data.total_hits:
+            rule['reset_alerted_times'] = False
+
+        if not rule['reset_alerted_times'] and self.thread_data.reverse_query_total_hits:
             if not 'reverse_query_processed_hits' in rule:
                 rule["reverse_query_processed_hits"] =  {}
 
@@ -485,14 +488,12 @@ class ElastAlerter(object):
 
                 # this will set the key the cache key
                 self.is_silenced(silence_cache_key, max_realert_times)
-
                 until = self.silence_cache[silence_cache_key][0]
                 exponent = self.silence_cache[silence_cache_key][1]
                 alerted_times = 0
                 max_alert_times = self.silence_cache[silence_cache_key][3]
                 self.silence_cache[silence_cache_key] = (until, exponent, alerted_times, max_alert_times)
                 self.set_realert(silence_cache_key, until, exponent, alerted_times, max_alert_times)
-                rule['reset_alerted_times'] = False
                 elastalert_logger.info("silence cache after inserting doc in ES: %s", self.silence_cache[silence_cache_key])
             else:
                 elastalert_logger.info("Found reverse query for rule: %s. But query_key_value is None", rule['name'])
@@ -1991,7 +1992,7 @@ class ElastAlerter(object):
         if self.debug:
             return False
         query = {'term': {'rule_name': rule_name}}
-        sort = {'sort': {'until': {'order': 'desc'}}}
+        sort = {'sort': {'@timestamp': {'order': 'desc'}}}
         if self.writeback_es.is_atleastfive():
             query = {'query': query}
         else:

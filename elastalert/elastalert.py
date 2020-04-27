@@ -485,18 +485,20 @@ class ElastAlerter(object):
                 silence_cache_key += '.' + query_key_value
 
                 max_realert_times = rule.get("max_realert_times", 1)
-
-                # this will set the key the cache key
-                self.is_silenced(silence_cache_key, max_realert_times)
-                until = self.silence_cache[silence_cache_key][0]
-                exponent = self.silence_cache[silence_cache_key][1]
                 alerted_times = 0
-                max_alert_times = self.silence_cache[silence_cache_key][3]
-                self.silence_cache[silence_cache_key] = (until, exponent, alerted_times, max_alert_times)
-                self.set_realert(silence_cache_key, until, exponent, alerted_times, max_alert_times)
+
+                # this will set the key the silence_cache_key, if already exists in elasalert_silence index
+                self.is_silenced(silence_cache_key, max_realert_times)
+                try:
+                    until, exponent = self.silence_cache[silence_cache_key][0], self.silence_cache[silence_cache_key][1]
+                    elastalert_logger.info("silence_cache %s not found. Creating one with default until period", silence_cache_key)
+                except IndexError:
+                    # if cache key is not found. Set current time as until time.
+                    until, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
+                    until = ts_now()
+
+                self.set_realert(silence_cache_key, until, exponent, alerted_times, max_realert_times)
                 elastalert_logger.info("silence cache after inserting doc in ES: %s", self.silence_cache[silence_cache_key])
-            else:
-                elastalert_logger.info("Found reverse query for rule: %s. But query_key_value is None", rule['name'])
 
         # Record doc_type for use in get_top_counts
         if 'doc_type' not in rule and len(hits):

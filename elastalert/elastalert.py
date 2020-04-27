@@ -492,7 +492,7 @@ class ElastAlerter(object):
                 try:
                     until, exponent = self.silence_cache[silence_cache_key][0], self.silence_cache[silence_cache_key][1]
                     elastalert_logger.info("silence_cache %s not found. Creating one with default until period", silence_cache_key)
-                except IndexError:
+                except (IndexError, KeyError):
                     # if cache key is not found. Set current time as until time.
                     until, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
                     until = ts_now()

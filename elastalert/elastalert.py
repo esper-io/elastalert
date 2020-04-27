@@ -1986,7 +1986,7 @@ class ElastAlerter(object):
         """ Checks if rule_name is currently silenced. Returns false on exception. """
         # if self.thread_data.reset_alerted_times:
         if rule_name in self.silence_cache:
-            if ts_now() < self.silence_cache[rule_name][0] or self.silence_cache[rule_name][2] >= self.silence_cache[rule_name][3]:
+            if ts_now() < self.silence_cache[rule_name][0] or self.silence_cache[rule_name][2] >= max_realert_times:
                 return True
 
         if self.debug:
@@ -2019,7 +2019,6 @@ class ElastAlerter(object):
         if res['hits']['hits']:
             until_ts = res['hits']['hits'][0]['_source']['until']
             exponent = res['hits']['hits'][0]['_source'].get('exponent', 0)
-            max_realert_times = res['hits']['hits'][0]['_source'].get('max_realert_times', max_realert_times)
             alerted_times = res['hits']['hits'][0]['_source'].get('alerted_times', 0)
 
             if rule_name not in list(self.silence_cache.keys()):

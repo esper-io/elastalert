@@ -1,4 +1,4 @@
-version: '2'
+version: '3'
 services:
     elastalert:
         build:
@@ -8,3 +8,4 @@ services:
         working_dir: /home/elastalert
         volumes:
             - ./:/home/elastalert/
+            - ./smtp.yaml:/opt/elastalert/smtp.yaml

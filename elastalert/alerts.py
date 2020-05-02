@@ -11,6 +11,9 @@ import time
 import uuid
 import warnings
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from base64 import b64decode
 from email.utils import formatdate
 from html.parser import HTMLParser
 from smtplib import SMTP
@@ -454,15 +457,54 @@ class EmailAlerter(Alerter):
         else:
             email_msg = MIMEText(body, _charset='UTF-8')
         email_msg['Subject'] = self.create_title(matches)
-        email_msg['To'] = ', '.join(to_addr)
-        email_msg['From'] = self.from_addr
-        email_msg['Reply-To'] = self.rule.get('email_reply_to', email_msg['To'])
-        email_msg['Date'] = formatdate()
+        # email_msg['To'] = ', '.join(to_addr)
+        # email_msg['From'] = self.from_addr
+        # email_msg['Reply-To'] = self.rule.get('email_reply_to', email_msg['To'])
+        # email_msg['Date'] = formatdate()
+
         if self.rule.get('cc'):
             email_msg['CC'] = ','.join(self.rule['cc'])
             to_addr = to_addr + self.rule['cc']
         if self.rule.get('bcc'):
             to_addr = to_addr + self.rule['bcc']
+
+        with open(os.getcwd() + "/templates/esper_logo", "rb") as image:
+            esperlogo = MIMEImage(b64decode(image.read()))
+            esperlogo.add_header("Content-ID", "<esperlogo>")
+
+        with open(os.getcwd() + "/templates/alert", "rb") as image:
+            alert = MIMEImage(b64decode(image.read()))
+            alert.add_header("Content-ID", "<alert>")
+
+        with open(os.getcwd() + "/templates/battery", "rb") as image:
+            battery = MIMEImage(b64decode(image.read()))
+            battery.add_header("Content-ID", "<battery>")
+
+        with open(os.getcwd() + "/templates/bluetooth", "rb") as image:
+            bluetooth = MIMEImage(b64decode(image.read()))
+            bluetooth.add_header("Content-ID", "<bluetooth>")
+
+        with open(os.getcwd() + "/templates/network", "rb") as image:
+            network = MIMEImage(b64decode(image.read()))
+            network.add_header("Content-ID", "<network>")
+
+        message = MIMEMultipart("alternative")
+        message['Subject'] = self.create_title(matches)
+        message['To'] = ', '.join(to_addr)
+        message['From'] = self.from_addr
+        message['Reply-To'] = self.rule.get('email_reply_to', message['To'])
+        message['Date'] = formatdate()
+
+        message.attach(email_msg)
+        message.attach(esperlogo)
+        message.attach(alert)
+
+        if self.rule['alert_type'] == "battery_level":
+            message.attach(battery)
+        if self.rule['alert_type'] == "bluetooth":
+            message.attach(bluetooth)
+        if self.rule['alert_type'] == "network"
+            message.attach(network)
 
         try:
             if self.smtp_ssl:
@@ -484,7 +526,7 @@ class EmailAlerter(Alerter):
             raise EAException("Error connecting to SMTP host: %s" % (e))
         except SMTPAuthenticationError as e:
             raise EAException("SMTP username/password rejected: %s" % (e))
-        self.smtp.sendmail(self.from_addr, to_addr, email_msg.as_string())
+        self.smtp.sendmail(self.from_addr, to_addr, message.as_string())
         self.smtp.quit()
 
         elastalert_logger.info("Sent email to %s" % (to_addr))

@@ -499,11 +499,11 @@ class EmailAlerter(Alerter):
         message.attach(esperlogo)
         message.attach(alert)
 
-        if self.rule['alert_type'] == "battery_level":
+        if self.rule['alert_type'] == "battery":
             message.attach(battery)
         if self.rule['alert_type'] == "bluetooth":
             message.attach(bluetooth)
-        if self.rule['alert_type'] == "network"
+        if self.rule['alert_type'] == "network":
             message.attach(network)
 
         try:

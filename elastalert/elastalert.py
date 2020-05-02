@@ -361,8 +361,6 @@ class ElastAlerter(object):
             five=rule['five'],
         )
 
-        elastalert_logger.info("query: %s" %query)
-
         reverse_query = self.get_query(
             rule['reverse_filter'],
             starttime,

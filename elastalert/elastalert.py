@@ -473,7 +473,7 @@ class ElastAlerter(object):
 
                 # Remember the new data's IDs
                 rule['reverse_query_processed_hits'][event['_id']] = lookup_es_key(event, rule['timestamp_field'])
-                elastalert_logger.info("Processed event id: %s",rule['reverse_query_processed_hits'][event['_id']])
+                # elastalert_logger.info("Processed event id: %s",rule['reverse_query_processed_hits'][event['_id']])
                 rule['reset_alerted_times'] = True
 
         if rule['reset_alerted_times']:
@@ -482,7 +482,7 @@ class ElastAlerter(object):
             for query_hit in reverse_query_hits:
                 query_key_value = self.get_query_key_value(rule, query_hit)
                 if query_key_value is not None:
-                    elastalert_logger.info("Found reverse query for rule: %s. Reseting silence_cache_key", rule['name'])
+                    # elastalert_logger.info("Found reverse query for rule: %s. Reseting silence_cache_key", rule['name'])
                     silence_cache_key += '.' + query_key_value
 
                     max_realert_times = rule.get("max_realert_times", 1)
@@ -499,7 +499,7 @@ class ElastAlerter(object):
                         until = ts_now()
 
                     self.set_realert(silence_cache_key, until, exponent, alerted_times, max_realert_times)
-                    elastalert_logger.info("silence cache after inserting doc in ES: %s", self.silence_cache[silence_cache_key])
+                    # elastalert_logger.info("silence cache after inserting doc in ES: %s", self.silence_cache[silence_cache_key])
 
         # Record doc_type for use in get_top_counts
         if 'doc_type' not in rule and len(hits):

@@ -1016,7 +1016,7 @@ class ElastAlerter(object):
                 next_alert, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
                 try:
                     alerted_times = self.silence_cache.get(silence_cache_key, ())[2]
-                    elastalert_logger.info("AlertedTimes from cache: %s", alerted_times)
+                    # elastalert_logger.info("AlertedTimes from cache: %s", alerted_times)
                 except IndexError:
                     alerted_times = 0
 

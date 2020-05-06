@@ -478,8 +478,8 @@ class ElastAlerter(object):
 
         if rule['reset_alerted_times']:
             rule_name = rule['name']
-            silence_cache_key = rule['name']
             for query_hit in reverse_query_hits:
+                silence_cache_key = rule['name']
                 query_key_value = self.get_query_key_value(rule, query_hit)
                 if query_key_value is not None:
                     # elastalert_logger.info("Found reverse query for rule: %s. Reseting silence_cache_key", rule['name'])

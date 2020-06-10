@@ -1,11 +1,11 @@
-version: '2'
+version: '3'
 services:
-    tox:
+    elastalert:
         build:
             context: ./
-            dockerfile: Dockerfile-test
-        command: tox
-        container_name: elastalert_tox
+            dockerfile: Dockerfile
+        container_name: elastalert
         working_dir: /home/elastalert
         volumes:
             - ./:/home/elastalert/
+            - ./smtp.yaml:/opt/elastalert/smtp.yaml

@@ -35,6 +35,7 @@ definitions:
       schedule: {type: string}
 
   filter: &filter {}
+  reverse_filter: &reverse_filter {}
 
   mattermostField: &mattermostField
     type: object
@@ -197,6 +198,13 @@ properties:
   filter :
     type: [array, object]
     items: *filter
+    additionalProperties: false
+    properties:
+        download_dashboard: {type: string}
+
+  reverse_filter :
+    type: [array, object]
+    items: *reverse_filter
     additionalProperties: false
     properties:
         download_dashboard: {type: string}

@@ -1247,3 +1247,5 @@ class PercentageMatchRule(BaseAggregationRule):
         if 'min_percentage' in self.rules and match_percentage < self.rules['min_percentage']:
             return True
         return False
+
+

@@ -161,6 +161,7 @@ class ElastAlerter(object):
         self.replace_dots_in_field_names = self.conf.get('replace_dots_in_field_names', False)
         self.thread_data.num_hits = 0
         self.thread_data.num_dupes = 0
+
         self.scheduler = BackgroundScheduler()
         self.string_multi_field_name = self.conf.get('string_multi_field_name', False)
         self.add_metadata_alert = self.conf.get('add_metadata_alert', False)
@@ -369,7 +370,6 @@ class ElastAlerter(object):
             to_ts_func=rule['dt_to_ts'],
             five=rule['five'],
         )
-
         if self.thread_data.current_es.is_atleastsixsix():
             extra_args = {'_source_includes': rule['include']}
         else:
@@ -384,6 +384,7 @@ class ElastAlerter(object):
 
         try:
             if scroll:
+                # todo: something is not right here. Both results are in same variable.
                 res = self.thread_data.current_es.scroll(scroll_id=rule['scroll_id'], scroll=scroll_keepalive)
                 res = self.thread_data.current_es.scroll(scroll_id=rule['reverse_query_scroll_id'], scroll=scroll_keepalive)
             else:
@@ -416,7 +417,6 @@ class ElastAlerter(object):
                     self.thread_data.total_hits = int(res['hits']['total']['value'])
                 else:
                     self.thread_data.total_hits = int(res['hits']['total'])
-
                 # save the results of reverse query
                 if self.thread_data.current_es.is_atleastseven():
                     self.thread_data.reverse_query_total_hits = int(res2['hits']['total']['value'])
@@ -492,7 +492,7 @@ class ElastAlerter(object):
                     self.is_silenced(silence_cache_key, max_realert_times)
                     try:
                         until, exponent = self.silence_cache[silence_cache_key][0], self.silence_cache[silence_cache_key][1]
-                        elastalert_logger.info("silence_cache %s not found. Creating one with default until period", silence_cache_key)
+                        # elastalert_logger.info("silence_cache %s not found. Creating one with default until period", silence_cache_key)
                     except (IndexError, KeyError):
                         # if cache key is not found. Set current time as until time.
                         until, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
@@ -590,7 +590,7 @@ class ElastAlerter(object):
                     ignore_unavailable=True
                 )
             else:
-                res = self.thread_data.current_es.deprecated_search(index=index, doc_type=rule['doc_type'],
+                res = self.thread_data.current_es.search(index=index, doc_type=rule['doc_type'],
                                                                     body=query, size=0, ignore_unavailable=True)
         except ElasticsearchException as e:
             # Elasticsearch sometimes gives us GIGANTIC error messages
@@ -1127,8 +1127,9 @@ class ElastAlerter(object):
                                      seconds=new_rule['run_every'].total_seconds(),
                                      id=new_rule['name'],
                                      max_instances=1,
+                                     coalesce=True,
                                      jitter=5)
-        job.modify(next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=random.randint(0, 15)))
+        job.modify(next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=random.randint(0, 60)))
 
         return new_rule
 

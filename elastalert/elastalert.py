@@ -20,6 +20,7 @@ from socket import error
 import dateutil.tz
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.executors.pool import ThreadPoolExecutor, ProcessPoolExecutor
 from croniter import croniter
 from elasticsearch.exceptions import ConnectionError
 from elasticsearch.exceptions import ElasticsearchException
@@ -161,8 +162,12 @@ class ElastAlerter(object):
         self.replace_dots_in_field_names = self.conf.get('replace_dots_in_field_names', False)
         self.thread_data.num_hits = 0
         self.thread_data.num_dupes = 0
-
-        self.scheduler = BackgroundScheduler()
+        
+        executors = {
+            'default': ThreadPoolExecutor(50),
+            'processpool': ProcessPoolExecutor(5)
+            }
+        self.scheduler = BackgroundScheduler(executors=executors)
         self.string_multi_field_name = self.conf.get('string_multi_field_name', False)
         self.add_metadata_alert = self.conf.get('add_metadata_alert', False)
         self.show_disabled_rules = self.conf.get('show_disabled_rules', True)
@@ -791,7 +796,8 @@ class ElastAlerter(object):
         if 'starttime' not in rule:
             if not rule.get('scan_entire_timeframe'):
                 # Try to get the last run from Elasticsearch
-                last_run_end = self.get_starttime(rule)
+                # last_run_end = self.get_starttime(rule)  # comment last check from ES
+                last_run_end = None  # always start from now - required window
                 if last_run_end:
                     rule['starttime'] = last_run_end
                     self.adjust_start_time_for_overlapping_agg_query(rule)
@@ -1129,7 +1135,7 @@ class ElastAlerter(object):
                                      max_instances=1,
                                      coalesce=True,
                                      jitter=5)
-        job.modify(next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=random.randint(0, 60)))
+        job.modify(next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=random.randint(0, 30)))
 
         return new_rule
 
@@ -1380,7 +1386,7 @@ class ElastAlerter(object):
             self.handle_uncaught_exception(e, rule)
         else:
             old_starttime = pretty_ts(rule.get('original_starttime'), rule.get('use_local_time'))
-            elastalert_logger.info("Ran %s from %s to %s: %s query hits (%s already seen), %s matches,"
+            elastalert_logger.info("Ran rule %s from %s to %s: %s query hits (%s already seen), %s matches,"
                                    " %s alerts sent" % (rule['name'], old_starttime, pretty_ts(endtime, rule.get('use_local_time')),
                                                         self.thread_data.num_hits, self.thread_data.num_dupes, num_matches,
                                                         self.thread_data.alerts_sent))

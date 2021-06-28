@@ -26,6 +26,8 @@ from elasticsearch.exceptions import ConnectionError
 from elasticsearch.exceptions import ElasticsearchException
 from elasticsearch.exceptions import NotFoundError
 from elasticsearch.exceptions import TransportError
+from elasticsearch import helpers
+from elasticsearch.helpers import BulkIndexError
 
 from . import kibana
 from .alerts import DebugAlerter
@@ -164,8 +166,7 @@ class ElastAlerter(object):
         self.thread_data.num_dupes = 0
         
         executors = {
-            'default': ThreadPoolExecutor(50),
-            'processpool': ProcessPoolExecutor(5)
+            'default': ThreadPoolExecutor(100)
             }
         self.scheduler = BackgroundScheduler(executors=executors)
         self.string_multi_field_name = self.conf.get('string_multi_field_name', False)
@@ -357,7 +358,6 @@ class ElastAlerter(object):
         :param endtime: The latest time to query.
         :return: A list of hits, bounded by rule['max_query_size'] (or self.max_query_size).
         """
-
         query = self.get_query(
             rule['filter'],
             starttime,
@@ -387,11 +387,14 @@ class ElastAlerter(object):
                 query['fields'] = rule['include']
             extra_args = {}
 
+        # print(f"query: {query}")
+
+        _t_start = time.time()
         try:
             if scroll:
                 # todo: something is not right here. Both results are in same variable.
                 res = self.thread_data.current_es.scroll(scroll_id=rule['scroll_id'], scroll=scroll_keepalive)
-                res = self.thread_data.current_es.scroll(scroll_id=rule['reverse_query_scroll_id'], scroll=scroll_keepalive)
+                res2 = self.thread_data.current_es.scroll(scroll_id=rule['reverse_query_scroll_id'], scroll=scroll_keepalive)
             else:
                 res = self.thread_data.current_es.search(
                     scroll=scroll_keepalive,
@@ -422,6 +425,7 @@ class ElastAlerter(object):
                     self.thread_data.total_hits = int(res['hits']['total']['value'])
                 else:
                     self.thread_data.total_hits = int(res['hits']['total'])
+                
                 # save the results of reverse query
                 if self.thread_data.current_es.is_atleastseven():
                     self.thread_data.reverse_query_total_hits = int(res2['hits']['total']['value'])
@@ -446,21 +450,30 @@ class ElastAlerter(object):
                 e = str(e)[:1024] + '... (%d characters removed)' % (len(str(e)) - 1024)
             self.handle_error('Error running query: %s' % (e), {'rule': rule['name'], 'query': query})
             return None
+        _t_exec = time.time() - _t_start
 
         hits = res['hits']['hits']
         self.thread_data.num_hits += len(hits)
         lt = rule.get('use_local_time')
-        status_log = "Queried rule %s from %s to %s: %s / %s hits" % (
+        status_log = "Queried rule %s from %s to %s: %s / %s hits in %s seconds" % (
             rule['name'],
             pretty_ts(starttime, lt),
             pretty_ts(endtime, lt),
             self.thread_data.num_hits,
-            len(hits)
+            len(hits),
+            _t_exec
         )
         if self.thread_data.total_hits > rule.get('max_query_size', self.max_query_size):
             elastalert_logger.info("%s (scrolling..)" % status_log)
         else:
             elastalert_logger.info(status_log)
+
+        ## if both results exists, invalidate normal query
+        # if self.thread_data.reverse_query_total_hits > 0 and self.thread_data.total_hits > 0:
+        #     hits = []
+        #     self.thread_data.total_hits = 0
+
+        _t_process_hits_start = time.time()
 
         hits = self.process_hits(rule, hits)
         reverse_query_hits =  self.process_hits(rule, res2['hits']['hits'])
@@ -472,6 +485,7 @@ class ElastAlerter(object):
             if not 'reverse_query_processed_hits' in rule:
                 rule["reverse_query_processed_hits"] =  {}
 
+            # remove duplicate events
             for event in reverse_query_hits:
                 if event['_id'] in rule['reverse_query_processed_hits']:
                     continue
@@ -480,9 +494,13 @@ class ElastAlerter(object):
                 rule['reverse_query_processed_hits'][event['_id']] = lookup_es_key(event, rule['timestamp_field'])
                 # elastalert_logger.info("Processed event id: %s",rule['reverse_query_processed_hits'][event['_id']])
                 rule['reset_alerted_times'] = True
+        
+        _t_process_hits_end = time.time() - _t_process_hits_start
 
+        _t_silence_start = time.time()
         if rule['reset_alerted_times']:
             rule_name = rule['name']
+            es_silence_docs = {}
             for query_hit in reverse_query_hits:
                 silence_cache_key = rule['name']
                 query_key_value = self.get_query_key_value(rule, query_hit)
@@ -492,20 +510,51 @@ class ElastAlerter(object):
 
                     max_realert_times = rule.get("max_realert_times", 1)
                     alerted_times = 0
+                    
+                    # set silence until now
+                    until = ts_now()
+                    exponent = 0
+                    self.silence_cache[silence_cache_key] = (until, exponent, alerted_times, max_realert_times)
+                    index = self.writeback_es.resolve_writeback_index(self.writeback_index, 'silence')
+                    body = {
+                        '_op_type': 'index',
+                        '_index': index,
+                        'exponent': exponent,
+                        'rule_name': silence_cache_key,
+                        '@timestamp': dt_to_ts(ts_now()),
+                        'until': dt_to_ts(until),
+                        'max_realert_times': max_realert_times,
+                        'alerted_times': alerted_times
+                        }
+                    es_silence_docs[silence_cache_key] = body
+                    # self.set_realert(silence_cache_key, until, exponent, alerted_times, max_realert_times)
 
+                    ### old code 
                     # this will set the key the silence_cache_key, if already exists in elasalert_silence index
-                    self.is_silenced(silence_cache_key, max_realert_times)
-                    try:
-                        until, exponent = self.silence_cache[silence_cache_key][0], self.silence_cache[silence_cache_key][1]
-                        # elastalert_logger.info("silence_cache %s not found. Creating one with default until period", silence_cache_key)
-                    except (IndexError, KeyError):
-                        # if cache key is not found. Set current time as until time.
-                        until, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
-                        until = ts_now()
+                    # self.is_silenced(silence_cache_key, max_realert_times)
+                    # try:
+                    #     until, exponent = self.silence_cache[silence_cache_key][0], self.silence_cache[silence_cache_key][1]
+                    #     # elastalert_logger.info("silence_cache %s not found. Creating one with default until period", silence_cache_key)
+                    # except (IndexError, KeyError):
+                    #     # if cache key is not found. Set current time as until time.
+                    #     until, exponent = self.next_alert_time(rule, silence_cache_key, ts_now())
+                    #     until = ts_now()
 
-                    self.set_realert(silence_cache_key, until, exponent, alerted_times, max_realert_times)
+                    # self.set_realert(silence_cache_key, until, exponent, alerted_times, max_realert_times)
                     # elastalert_logger.info("silence cache after inserting doc in ES: %s", self.silence_cache[silence_cache_key])
 
+            # write to silence indexes in bulk
+            # todo chunk it
+            if len(es_silence_docs):
+                try:
+                    helpers.bulk(self.writeback_es, list(es_silence_docs.values()))
+                except BulkIndexError as exp:
+                    logging.error('Error bulk silence indexing: %s' % (str(exp)))
+
+        _t_silence_end = time.time() - _t_silence_start
+        
+        elastalert_logger.info("Latency for %s | process hits is %s seconds | silencing is %s" % (rule['name'], _t_process_hits_end, _t_silence_end))
+        
         # Record doc_type for use in get_top_counts
         if 'doc_type' not in rule and len(hits):
             rule['doc_type'] = hits[0]['_type']
@@ -703,6 +752,8 @@ class ElastAlerter(object):
         :param end: The latest time to query.
         Returns True on success and False on failure.
         """
+
+        _t1_start = time.time()
         if start is None:
             start = self.get_index_start(rule['index'])
         if end is None:
@@ -724,8 +775,12 @@ class ElastAlerter(object):
                 old_len = len(data)
                 data = self.remove_duplicate_events(data, rule)
                 self.thread_data.num_dupes += old_len - len(data)
+        
+        elastalert_logger.info("Getting hits for %s in %s seconds" % (rule['name'], time.time() - _t1_start))
+        
 
         # There was an exception while querying
+        # _t1_start = time.time()
         if data is None:
             return False
         elif data:
@@ -736,15 +791,17 @@ class ElastAlerter(object):
             elif rule.get('aggregation_query_element'):
                 rule_inst.add_aggregation_data(data)
             else:
-                # the matches output depends on rule type. But for reverse query these not rule 
                 rule_inst.add_data(data)
+        # elastalert_logger.info("Adding data for %s in %s seconds" % (rule['name'], time.time() - _t1_start))
+
         try:
             if rule.get('scroll_id') and self.thread_data.num_hits < self.thread_data.total_hits and should_scrolling_continue(rule):
                 self.run_query(rule, start, end, scroll=True)
+                
         except RuntimeError:
             # It's possible to scroll far enough to hit max recursive depth
             pass
-
+        
         if 'scroll_id' in rule:
             scroll_id = rule.pop('scroll_id')
             try:
@@ -942,7 +999,7 @@ class ElastAlerter(object):
         :param endtime: The latest timestamp to query.
         :return: The number of matches that the rule produced.
         """
-        # if there was no match for actually query, and alteast 1 match for reverse query, reset the alerted_time to 0
+        # if there was no match for actual query, and alteast 1 match for reverse query, reset the alerted_time to 0
         run_start = time.time()
         self.thread_data.current_es = self.es_clients.setdefault(rule['name'], elasticsearch_client(rule))
 
@@ -966,6 +1023,7 @@ class ElastAlerter(object):
             return 0
 
         # Run the rule. If querying over a large time period, split it up into segments
+        _run_q_start = time.time()
         self.thread_data.num_hits = 0
         self.thread_data.num_dupes = 0
         self.thread_data.cumulative_hits = 0
@@ -982,6 +1040,7 @@ class ElastAlerter(object):
             rule['starttime'] = tmp_endtime
             rule['type'].garbage_collect(tmp_endtime)
 
+
         if rule.get('aggregation_query_element'):
             if endtime - tmp_endtime == segment_size:
                 self.run_query(rule, tmp_endtime, endtime)
@@ -996,9 +1055,15 @@ class ElastAlerter(object):
                 return 0
             self.thread_data.cumulative_hits += self.thread_data.num_hits
             rule['type'].garbage_collect(endtime)
+        
+        _run_q_end = time.time() - _run_q_start
 
         # Process any new matches
         num_matches = len(rule['type'].matches)
+        
+        
+        _t_start =  time.time()
+
         while rule['type'].matches:
             match = rule['type'].matches.pop(0)
             match['num_hits'] = self.thread_data.cumulative_hits
@@ -1015,7 +1080,8 @@ class ElastAlerter(object):
             max_realert_times = rule.get("max_realert_times", 1)
 
             if self.is_silenced(rule['name'] + "._silence", max_realert_times) or self.is_silenced(silence_cache_key, max_realert_times):
-                elastalert_logger.info('Ignoring match for silenced rule %s' % (silence_cache_key,))
+                # elastalert_logger.info('Ignoring match for silenced rule %s' % (silence_cache_key,))
+                # print(f'silencing......{silence_cache_key}')
                 continue
 
             if rule['realert']:
@@ -1025,7 +1091,6 @@ class ElastAlerter(object):
                     # elastalert_logger.info("AlertedTimes from cache: %s", alerted_times)
                 except IndexError:
                     alerted_times = 0
-
                 self.set_realert(silence_cache_key, next_alert, exponent, alerted_times+1, max_realert_times)
 
             if rule.get('run_enhancements_first'):
@@ -1046,6 +1111,7 @@ class ElastAlerter(object):
             # Add it as an aggregated match
             self.add_aggregated_alert(match, rule)
 
+        _t_end = time.time() - _t_start 
         # Mark this endtime for next run's start
         rule['previous_endtime'] = endtime
 
@@ -1057,7 +1123,9 @@ class ElastAlerter(object):
                 'matches': num_matches,
                 'hits': max(self.thread_data.num_hits, self.thread_data.cumulative_hits),
                 '@timestamp': ts_now(),
-                'time_taken': time_taken}
+                'time_taken': time_taken,
+                'alert_process_time': _t_end,
+                'run_query_time': _run_q_end}
         self.writeback('elastalert_status', body)
 
         return num_matches
@@ -1264,10 +1332,12 @@ class ElastAlerter(object):
         self.wait_until_responsive(timeout=self.args.timeout)
         self.running = True
         elastalert_logger.info("Starting up")
+
+        # todo add new config variable for handling pending alerts and config changes
         self.scheduler.add_job(self.handle_pending_alerts, 'interval',
-                               seconds=self.run_every.total_seconds(), id='_internal_handle_pending_alerts')
+                               seconds=300, id='_internal_handle_pending_alerts')
         self.scheduler.add_job(self.handle_config_change, 'interval',
-                               seconds=self.run_every.total_seconds(), id='_internal_handle_config_change')
+                               seconds=300, id='_internal_handle_config_change')
         self.scheduler.start()
         while self.running:
             next_run = datetime.datetime.utcnow() + self.run_every
@@ -1348,7 +1418,6 @@ class ElastAlerter(object):
 
         # elastalert_logger.info("reset_alerted_times %s", self.thread_data.num_dupes)
         # elastalert_logger.info("reset_alerted_times %s", self.thread_data.reset_alerted_times)
-
         self.thread_data.alerts_sent = 0
         next_run = datetime.datetime.utcnow() + rule['run_every']
         # Set endtime based on the rule's delay

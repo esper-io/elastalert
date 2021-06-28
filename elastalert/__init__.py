@@ -27,7 +27,8 @@ class ElasticSearchClient(Elasticsearch):
                                                   timeout=conf['es_conn_timeout'],
                                                   send_get_body_as=conf['send_get_body_as'],
                                                   client_cert=conf['client_cert'],
-                                                  client_key=conf['client_key'])
+                                                  client_key=conf['client_key'],
+                                                  maxsize=50)
         self._conf = copy.copy(conf)
         self._es_version = None
 

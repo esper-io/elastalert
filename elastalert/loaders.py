@@ -109,7 +109,7 @@ class RulesLoader(object):
 
         # Load each rule configuration file
         rules = []
-        rule_files = self.get_names(conf, use_rule)
+        rule_files = self.get_names(conf, use_rule) #todo intercept here for sharding
         for rule_file in rule_files:
             try:
                 rule = self.load_configuration(rule_file, conf, args)
